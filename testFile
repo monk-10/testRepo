@@ -1,0 +1,222 @@
+        param ($mfstinstance)
+        
+        Clear-Host
+        
+        #region Functions
+        function Ask-Question {
+        	param($question, [Switch]$loop = $true, [Switch]$numbersOnly, [Switch]$index, [Array]$array = $null)
+        
+        	$res = [String]::Empty
+        	$clear = $false
+        
+        	do {
+        		$res = Read-Host -Prompt $question
+        
+        		if ($array -ne $null) {
+        			$arrayRange = @(0..($array.Count - 1))
+        			$clear = $($arrayRange -contains $res)
+        		} elseif ($numbersOnly -eq $true) {
+        			$clear = $($res -match '^\d+$')
+        		} else {
+        			$clear = $(![String]::IsNullOrEmpty($res))
+        		}
+        	} while ($loop -eq $true -and $clear -eq $false)
+        
+        	if ($array -ne $null -and $index -eq $false) { $array.GetValue($res) } else { $res }
+        }
+        
+        function Connect-Instance {
+        	param($mfstinstance)
+        
+        	$connString = 'Data Source={0};Initial Catalog=tempdb;Integrated Security=SSPI' -f $mfstinstance
+        	$sqlConnection = New-Object System.Data.SqlClient.SqlConnection($connString)
+        	$serverConnection = New-Object Microsoft.SqlServer.Management.Common.ServerConnection($sqlConnection)
+        
+        	New-Object Microsoft.SqlServer.Management.Smo.Server($serverConnection)
+        }
+        
+        function Gather-Instances {
+        	param()
+        
+        	$root = 'HKLM:\Software\Microsoft\Microsoft SQL Server'
+        	$instances = '{0}\Instance Names\SQL' -f $root
+        	$instanceList = Get-Item $instances
+        
+        	$result = @()
+        
+        	foreach ($i in $instanceList.GetValueNames()) {
+        		$mfstinstance = [String]::Empty
+        		$installName = $instanceList.GetValue($i)
+        		$clusterPath = '{0}\{1}\Cluster' -f $root, $installName
+        
+        		if (Test-Path -Path $clusterPath) {
+        			$mfstinstance = $(Get-Item $clusterPath).GetValue('ClusterName')
+        		} else {
+        			$mfstinstance = $env:computername
+        		}
+        
+        		if ($i -ne 'MSSQLSERVER') {
+        			$mfstinstance += '\{0}' -f $i
+        		}
+        
+        		$result += $mfstinstance
+        	}
+        
+        	$result | Sort-Object
+        }
+        
+        
+        function Parse-SqlFiles {
+        	param($filePath)
+        
+        	$counter = 0
+        	$files =  Get-ChildItem $filePath -Filter *.sql -Recurse
+        	$regex = New-Object Regex('^use \[?(\w*)\]?;?\s*$', $([Text.RegularExpressions.RegexOptions]::Compiled -bor [Text.RegularExpressions.RegexOptions]::IgnoreCase))
+        
+        	$dbs = foreach ($f in $files) {
+        		$sr = New-Object System.IO.StreamReader $f.FullName
+        
+        		while ($sr.Peek() -gt -1) {
+        			$match = $regex.Match($sr.ReadLine())
+        
+        			if ($match.Success) {
+        				$match.Groups[1].Value.ToLower().Trim()
+        				$counter++
+        			}
+        		}
+        
+        		$sr.Close()
+        
+        		if ($counter -eq 0) {
+        			throw $('The file, {0}, did not have any use statements. Current non-standard deployment CO will fail' -f $f.Name)
+        		}
+        
+        		$counter = 0
+        	}
+        
+        	$dbs | Sort-Object | Select-Object -Unique
+        }
+        
+        function Print-Array {
+        	param($array)
+        
+        	foreach($i in $array) {
+        		Write-Output $('{0}: {1}' -f [Array]::IndexOf($array, $i), $i)
+        	}
+        }
+        
+        #endregion
+        function Check-Intrumentation-Run{
+               $database = 'SQLDBA'
+               $dbs = $server.Databases
+               $counter = 0
+               foreach($db in $dbs){
+               if($db.Name -like $database) 
+               {$counter = $counter +1}}
+               if($counter -eq 1){
+                Write-Output $("The Instrumentation already exists on the instance: {0}" -f $server.Name)
+                }
+               
+               else{
+        	   "" ;
+               Write-Host "Instrumentaion does not exists"
+        	   "" ; 
+               
+               Replace-and-Run
+               }
+                        }
+        
+        #region Assembly loading
+        $assemblies = @('Microsoft.SqlServer.ConnectionInfo','Microsoft.SqlServer.SMO','Microsoft.SqlServer.SqlEnum','Microsoft.SqlServer.SmoEnum')
+        $assemblies | %{ [Void][Reflection.Assembly]::LoadWithPartialName($_) }
+        #endregion
+        
+        $instances = @(Gather-Instances)
+        
+        function Replace-and-Run{
+        $DatabaseName ="master"
+        $FolderPath = $path
+        $Master = Split-Path $MyInvocation.MyCommand.Definition -Leaf
+        
+        #Loop through the .sql files and run them
+        foreach ($filename in get-childitem -path $FolderPath -filter "*.sql")
+        {
+        invoke-sqlcmd –ServerInstance $mfstinstance -Database $DatabaseName -InputFile $filename.fullname
+         }
+                 }
+
+        function invoke-powerhsell{
+        $Master = Split-Path $MyInvocation.MyCommand.Definition -Leaf
+        #$ScriptPath = Split-Path $MyInvocation.MyCommand.Definition
+        $name = Get-ChildItem "$path\*.ps1" | Where{$_.Name -ne $Master} 
+         & $name.FullName 
+         }
+        
+        function Show-Menu
+        {
+             param (
+                   [string]$Title = 'Implementation Choice'
+             )
+             
+             Write-Host "================ $Title ================"
+            
+             Write-Host "1: Press '1' for Implementation on ALL Instances."
+             Write-Host "2: Press '2' for getting instance choice."
+             Write-Host "Q: Press 'Q' to quit."
+        }
+        
+        "";
+        Write-Host "================ Automated MFST Deployment ================"
+        "";
+        $path = Ask-Question "`r`nPath to Script Files"
+        Write-host "Executing powershell script"
+        "";
+        invoke-powerhsell
+        "";
+        Write-Host "Windows task created for all instances"
+        Start-Sleep -Seconds 5
+
+        do
+        {    
+             "";
+             Show-Menu
+             $input = Read-Host "Please make a selection"
+             switch ($input)
+             {
+                   '1' {
+                        "";
+                        'You chose to implement on all instances'
+                        
+                        foreach($mfstinstance in $instances){
+                        
+                        $server = Connect-Instance $mfstinstance
+                        Write-Output $("`r`nConnected to: {0}" -f $server.Name)
+                        Check-Intrumentation-Run
+                        "";
+                        }
+        
+                   } '2' {
+                        "";
+                        
+                        if ([string]::IsNullOrEmpty($instance)) {
+            	        Write-Output "Instances Available:"
+            	        Print-Array $instances
+            	        $mfstinstance = Ask-Question "`r`nInstance Option for MFST Implementation" -array $instances
+                        }
+                        $server = Connect-Instance $mfstinstance
+                        Write-Output $("`r`nConnected to: {0}" -f $server.Name)
+                        "";
+                        Check-Intrumentation-Run
+                        
+                        
+                   }  'q' {
+                        return
+                   }
+             }
+             
+             pause
+        }
+        
+        until ($input -eq 'q')
+ 
+
